@@ -1,0 +1,101 @@
+# Default profile: redis + api + 2 mock workers + scaler (no GPU / no vLLM pull)
+# GPU profile: docker compose --profile gpu up  (requires NVIDIA runtime + big image pull)
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  api:
+    build: .
+    command: ["inference-api"]
+    environment:
+      IWL_REDIS_URL: redis://redis:6379/0
+      IWL_INFERENCE_MODE: MOCK
+      IWL_API_HOST: 0.0.0.0
+      IWL_API_PORT: 8080
+    ports:
+      - "8080:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker-1:
+    build: .
+    command: ["inference-worker"]
+    environment:
+      IWL_REDIS_URL: redis://redis:6379/0
+      IWL_INFERENCE_MODE: ${IWL_INFERENCE_MODE:-MOCK}
+      IWL_WORKER_ID: worker-1
+      IWL_WORKER_CONCURRENCY: "2"
+      IWL_METRICS_PORT: "9100"
+      IWL_VLLM_BASE_URL: http://vllm:8000/v1
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker-2:
+    build: .
+    command: ["inference-worker"]
+    environment:
+      IWL_REDIS_URL: redis://redis:6379/0
+      IWL_INFERENCE_MODE: ${IWL_INFERENCE_MODE:-MOCK}
+      IWL_WORKER_ID: worker-2
+      IWL_WORKER_CONCURRENCY: "2"
+      IWL_METRICS_PORT: "9101"
+      IWL_VLLM_BASE_URL: http://vllm:8000/v1
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  worker-3:
+    build: .
+    command: ["inference-worker"]
+    profiles: ["scaleout"]
+    environment:
+      IWL_REDIS_URL: redis://redis:6379/0
+      IWL_INFERENCE_MODE: ${IWL_INFERENCE_MODE:-MOCK}
+      IWL_WORKER_ID: worker-3
+      IWL_METRICS_PORT: "9102"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  scaler:
+    build: .
+    command: ["inference-scaler"]
+    environment:
+      IWL_REDIS_URL: redis://redis:6379/0
+      IWL_SCALE_MIN: "1"
+      IWL_SCALE_MAX: "4"
+      IWL_SCALE_UP_LAG: "5"
+      IWL_SCALE_DOWN_LAG: "1"
+      IWL_SCALE_INTERVAL_SECONDS: "2"
+      IWL_HYSTERESIS_HOLD_TICKS: "2"
+      IWL_METRICS_PORT: "9110"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # Optional: real GPU inference. Do NOT pull unless you intend to.
+  #   docker compose --profile gpu up
+  vllm:
+    profiles: ["gpu"]
+    image: vllm/vllm-openai:latest
+    runtime: nvidia
+    environment:
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+    command:
+      - "--model"
+      - "${VLLM_MODEL:-facebook/opt-125m}"
+      - "--max-model-len"
+      - "1024"
+    ports:
+      - "8000:8000"
+    shm_size: "2gb"
