@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 
 from inference_lab.config import Settings, get_settings
-from inference_lab.metrics import QUEUE_DEPTH, SCALE_DESIRED, SCALE_LAG, start_metrics_server
+from inference_lab.metrics import QUEUE_DEPTH, SCALE_DESIRED, SCALE_LAG, SCALE_PENDING, start_metrics_server
 from inference_lab.models import ScaleState
 from inference_lab.queue import JobQueue
 
@@ -75,12 +75,15 @@ class Autoscaler:
         return ScaleDecision(desired=self.desired, lag=lag, in_flight=in_flight, reason=reason)
 
     def tick(self) -> ScaleState:
-        lag = self.queue.lag()
-        # Approximate in-flight as pending entries that are claimed but not acked
-        decision = self.decide(lag=lag, in_flight=0)
+        # Scale on never-delivered lag. Pending (claimed, not acked) is in-flight:
+        # it can scale up, and it blocks scale-down. Passing in_flight=0 here made
+        # scale-down ignore work a worker had already claimed.
+        never_delivered, pending = self.queue.backlog()
+        decision = self.decide(lag=never_delivered, in_flight=pending)
         self.queue.set_desired_replicas(decision.desired)
-        QUEUE_DEPTH.set(lag)
-        SCALE_LAG.set(lag)
+        QUEUE_DEPTH.set(never_delivered + pending)
+        SCALE_LAG.set(never_delivered)
+        SCALE_PENDING.set(pending)
         SCALE_DESIRED.set(decision.desired)
         state = ScaleState(
             desired=decision.desired,

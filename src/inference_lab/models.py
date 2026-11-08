@@ -19,6 +19,7 @@ class EnqueueRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=16_000)
     max_tokens: int = Field(default=64, ge=1, le=2048)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    idempotency_key: str | None = Field(default=None, max_length=200)
 
 
 class EnqueueResponse(BaseModel):

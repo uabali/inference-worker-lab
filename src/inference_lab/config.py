@@ -15,6 +15,11 @@ class Settings(BaseSettings):
     consumer_group: str = "workers"
     result_prefix: str = "inference:result:"
     result_ttl_seconds: int = 3600
+    dlq_stream_key: str = "inference:dlq"
+    idempotency_prefix: str = "inference:idem:"
+    # 0 disables the enqueue cap. Depth is never-delivered + pending.
+    max_queue_depth: int = 10_000
+    max_attempts: int = 3
 
     # MOCK | VLLM
     inference_mode: str = "MOCK"
@@ -33,6 +38,8 @@ class Settings(BaseSettings):
     # Worker
     worker_id: str = "worker-1"
     worker_concurrency: int = 2
+    # XAUTOCLAIM min idle. Must be longer than a normal attempt so a live worker
+    # is not stolen. Crashed claims become visible after this idle time.
     claim_idle_ms: int = 30_000
     block_ms: int = 2_000
 

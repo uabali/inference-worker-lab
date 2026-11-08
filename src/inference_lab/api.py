@@ -13,7 +13,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from inference_lab.config import Settings, get_settings
 from inference_lab.metrics import QUEUE_DEPTH
 from inference_lab.models import EnqueueRequest, EnqueueResponse, JobResult, JobStatus
-from inference_lab.queue import JobQueue
+from inference_lab.queue import JobQueue, QueueFull
 
 log = logging.getLogger("inference_lab.api")
 
@@ -41,7 +41,14 @@ def create_app(settings: Settings | None = None, queue: JobQueue | None = None) 
     @app.post("/v1/jobs", response_model=EnqueueResponse)
     def enqueue(body: EnqueueRequest) -> EnqueueResponse:
         try:
-            job_id = q.enqueue(body.prompt, body.max_tokens, body.metadata)
+            job_id = q.enqueue(
+                body.prompt,
+                body.max_tokens,
+                body.metadata,
+                idempotency_key=body.idempotency_key,
+            )
+        except QueueFull as exc:
+            raise HTTPException(status_code=429, detail=str(exc)) from exc
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=503, detail=f"queue unavailable: {exc}") from exc
         try:
@@ -60,11 +67,17 @@ def create_app(settings: Settings | None = None, queue: JobQueue | None = None) 
     @app.get("/v1/scale")
     def get_scale() -> dict[str, int | str]:
         try:
-            lag = q.lag()
+            never_delivered, pending = q.backlog()
             desired = q.get_desired_replicas(default=settings.scale_min)
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-        return {"desired": desired, "lag": lag, "stream_length": q.stream_length()}
+        return {
+            "desired": desired,
+            "lag": never_delivered + pending,
+            "never_delivered": never_delivered,
+            "pending": pending,
+            "stream_length": q.stream_length(),
+        }
 
     @app.get("/metrics")
     def metrics() -> PlainTextResponse:
