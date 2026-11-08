@@ -33,6 +33,45 @@ def test_clamp_to_max(settings: Settings, queue: JobQueue) -> None:
     assert d.desired == settings.scale_max
 
 
+def test_pending_blocks_scale_down(settings: Settings, queue: JobQueue) -> None:
+    settings = settings.model_copy(
+        update={
+            "scale_down_lag": 10,
+            "scale_up_lag": 100,
+            "scale_up_in_flight": 100,
+            "hysteresis_hold_ticks": 2,
+        }
+    )
+    queue.ensure_group()
+    for i in range(3):
+        queue.enqueue(f"claimed-{i}")
+    assert len(queue.read_batch("worker-1", count=10)) == 3
+    never, pending = queue.backlog()
+    assert (never, pending) == (0, 3)
+    scaler = Autoscaler(settings, queue=queue)
+    scaler.desired = 3
+    scaler.tick()
+    state = scaler.tick()
+    assert state.desired == 3
+    assert state.in_flight == 3
+
+
+def test_pending_can_scale_up(settings: Settings, queue: JobQueue) -> None:
+    settings = settings.model_copy(
+        update={"scale_up_lag": 100, "scale_up_in_flight": 2, "hysteresis_hold_ticks": 2}
+    )
+    queue.ensure_group()
+    queue.enqueue("a")
+    queue.enqueue("b")
+    queue.read_batch("worker-1", count=10)
+    scaler = Autoscaler(settings, queue=queue)
+    first = scaler.tick()
+    assert first.desired == 1
+    second = scaler.tick()
+    assert second.desired == 2
+    assert second.in_flight == 2
+
+
 def test_scaler_writes_desired(queue: JobQueue, settings: Settings) -> None:
     scaler = Autoscaler(settings, queue=queue)
     for i in range(6):

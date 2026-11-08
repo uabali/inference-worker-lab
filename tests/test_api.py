@@ -35,6 +35,28 @@ def test_enqueue_and_get(client) -> None:
     assert got.json()["status"] == "queued"
 
 
+def test_idempotency_key_is_stable(client) -> None:
+    c, queue, _ = client
+    body = {"prompt": "once", "max_tokens": 8, "idempotency_key": "abc"}
+    first = c.post("/v1/jobs", json=body)
+    second = c.post("/v1/jobs", json=body)
+    assert first.status_code == 200 and second.status_code == 200
+    assert first.json()["job_id"] == second.json()["job_id"]
+    assert queue.stream_length() == 1
+
+
+def test_queue_full_is_429(settings: Settings, mem) -> None:
+    from inference_lab.memory_redis import MemoryRedis
+
+    assert isinstance(mem, MemoryRedis)
+    capped = settings.model_copy(update={"max_queue_depth": 1})
+    queue = JobQueue(capped, client=mem)
+    with TestClient(create_app(capped, queue)) as c:
+        assert c.post("/v1/jobs", json={"prompt": "a"}).status_code == 200
+        resp = c.post("/v1/jobs", json={"prompt": "b"})
+    assert resp.status_code == 429
+
+
 @pytest.mark.asyncio
 async def test_worker_processes_job(settings: Settings, queue: JobQueue) -> None:
     settings = settings.model_copy(update={"worker_id": "worker-1", "worker_concurrency": 1, "block_ms": 50})
